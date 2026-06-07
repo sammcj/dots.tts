@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import time
 from pathlib import Path
 from typing import Any, Iterator, TypedDict
@@ -68,9 +69,27 @@ class DotsTtsRuntime:
         self.precision = precision
         if torch.cuda.is_available():
             self.device = torch.device("cuda")
+        elif torch.backends.mps.is_available():
+            self.device = torch.device("mps")
         else:
             self.device = torch.device("cpu")
-            torch.set_num_threads(1)
+            torch.set_num_threads(max(1, (os.cpu_count() or 2) - 1))
+        # On MPS reduced precision is scoped: only the AR backbone + flow-matching
+        # DiT (`model.core`) is cast to it (below) and the matmul-heavy regions run
+        # under autocast, while the FFT-bearing vocoder STFT and speaker fbank stay
+        # fp32 because they live outside `core` (Metal has no fp16/bf16 FFT kernel).
+        # bf16 matmul works on MPS (torch >= 2.6) and bf16 keeps fp32's exponent
+        # range, so it's preferred over fp16. Anything else falls back to fp32.
+        if self.device.type == "mps" and self.precision.lower() not in {
+            "fp32", "torch.float32", "float32",
+            "bf16", "torch.bfloat16", "bfloat16",
+            "fp16", "torch.float16", "float16",
+        }:
+            logger.warning(
+                "Unsupported precision ({}) on MPS; using float32 instead.",
+                self.precision,
+            )
+            self.precision = "float32"
         if self.device.type == "cuda" and self.precision.lower() in {
             "fp32",
             "torch.float32",

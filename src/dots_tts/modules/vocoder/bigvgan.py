@@ -837,33 +837,43 @@ class AudioVAE(nn.Module):
 
     @torch.autocast(enabled=False, device_type="cuda")
     def extract_latents(self, x, do_sample=False):
+        # The vocoder has an LSTM (enc_mi_layer); Metal has no fp16/bf16 RNN
+        # kernel, so force fp32 and disable autocast even when the caller is in a
+        # reduced-precision region (the MPS path). On CUDA this is a no-op cost
+        # (the vocoder runs once per render, not in the hot loop).
         x = x.float()
-        x = self.audio_encoder(x)
-        x = x.permute(0, 2, 1)
-        x = self.enc_mi_layer(x)
-        x = x.permute(0, 2, 1)
-        x = self.pre_proj(x)
-        if do_sample:
-            m_q, logs_q = torch.split(x, self.h.latent_dim, dim=1)
-            x = m_q + torch.randn_like(m_q) * torch.exp(logs_q)
+        with torch.autocast(device_type=x.device.type, enabled=False):
+            x = self.audio_encoder(x)
+            x = x.permute(0, 2, 1)
+            x = self.enc_mi_layer(x)
+            x = x.permute(0, 2, 1)
+            x = self.pre_proj(x)
+            if do_sample:
+                m_q, logs_q = torch.split(x, self.h.latent_dim, dim=1)
+                x = m_q + torch.randn_like(m_q) * torch.exp(logs_q)
         return x
 
     def inference_from_latents(self, x, do_sample=True, noise_scale=1.0):
-        if do_sample:
-            assert x.size(1) == self.h.latent_dim * 2, (
-                f"Input must be like [B, D, H], got {x.shape}"
-            )
-            m_q, logs_q = torch.split(x, self.h.latent_dim, dim=1)
-            x = m_q + torch.randn_like(m_q) * torch.exp(logs_q) * noise_scale
-        else:
-            assert x.size(1) == self.h.latent_dim, (
-                f"Input must be like [B, D, H], got {x.shape}"
-            )
-        x = self.post_proj(x)
-        x = x.permute(0, 2, 1)
-        x = self.dec_mi_layer(x)
-        x = x.permute(0, 2, 1)
-        return self.decoder(x)
+        # See extract_latents: keep the vocoder (dec_mi_layer LSTM) in fp32 with
+        # autocast disabled so it runs on MPS under a bf16/fp16 backbone.
+        x = x.float()
+        with torch.autocast(device_type=x.device.type, enabled=False):
+            if do_sample:
+                assert x.size(1) == self.h.latent_dim * 2, (
+                    f"Input must be like [B, D, H], got {x.shape}"
+                )
+                m_q, logs_q = torch.split(x, self.h.latent_dim, dim=1)
+                x = m_q + torch.randn_like(m_q) * torch.exp(logs_q) * noise_scale
+            else:
+                assert x.size(1) == self.h.latent_dim, (
+                    f"Input must be like [B, D, H], got {x.shape}"
+                )
+            x = self.post_proj(x)
+            x = x.permute(0, 2, 1)
+            x = self.dec_mi_layer(x)
+            x = x.permute(0, 2, 1)
+            out = self.decoder(x)
+        return out
 
     def _validate_stream_latents(self, latents: torch.Tensor) -> None:
         if latents.ndim != 3:

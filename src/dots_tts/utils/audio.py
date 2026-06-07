@@ -34,12 +34,19 @@ def extract_fbank(
         raise ValueError(
             f"FBank expects a 1D or 2D waveform, got shape {tuple(waveform.shape)}."
         )
-    features = Kaldi.fbank(
-        feature_input,
-        num_mel_bins=n_mels,
-        sample_frequency=sample_rate,
-        dither=dither,
-    )
+    # Kaldi.fbank runs an rfft, and Metal has no fp16/bf16 FFT kernel, so this
+    # must be fp32 even when the caller is inside a reduced-precision autocast
+    # region (the MPS path). Forcing the input to fp32 and disabling autocast
+    # here keeps the fbank (and the speaker x-vector net it feeds) in fp32 while
+    # the matmul-heavy backbone still benefits from autocast elsewhere.
+    feature_input = feature_input.float()
+    with torch.autocast(device_type=feature_input.device.type, enabled=False):
+        features = Kaldi.fbank(
+            feature_input,
+            num_mel_bins=n_mels,
+            sample_frequency=sample_rate,
+            dither=dither,
+        )
     if mean_norm:
         features = features - features.mean(dim=0, keepdim=True)
     return features

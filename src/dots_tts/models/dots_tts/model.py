@@ -264,7 +264,7 @@ class DotsTtsModel(nn.Module):
     ) -> None:
         dtype = get_dtype(precision)
         device = next(self.core.parameters()).device
-        use_amp = device.type == "cuda" and dtype in {torch.float16, torch.bfloat16}
+        use_amp = device.type in {"cuda", "mps"} and dtype in {torch.float16, torch.bfloat16}
         with torch.autocast(device_type=device.type, dtype=dtype, enabled=use_amp):
             state = self._allocate_generate_state(
                 max_audio_patch_count=max_audio_patch_count,
@@ -289,8 +289,8 @@ class DotsTtsModel(nn.Module):
     ) -> None:
         dtype = get_dtype(precision)
         device = next(self.core.parameters()).device
-        state_dtype = dtype if device.type == "cuda" else torch.float32
-        use_amp = device.type == "cuda" and dtype in {torch.float16, torch.bfloat16}
+        state_dtype = dtype if device.type in {"cuda", "mps"} else torch.float32
+        use_amp = device.type in {"cuda", "mps"} and dtype in {torch.float16, torch.bfloat16}
         with torch.autocast(device_type=device.type, dtype=dtype, enabled=use_amp):
             state_audio_patch_count = self._resolve_state_audio_patch_count(
                 max_audio_patch_count
@@ -405,7 +405,7 @@ class DotsTtsModel(nn.Module):
         device: torch.device,
         dtype: torch.dtype,
     ) -> _GenerateState:
-        state_dtype = dtype if device.type == "cuda" else torch.float32
+        state_dtype = dtype if device.type in {"cuda", "mps"} else torch.float32
         state_audio_patch_count = self._resolve_state_audio_patch_count(
             max_audio_patch_count
         )
@@ -1611,7 +1611,7 @@ class DotsTtsModel(nn.Module):
     ) -> Iterator[torch.Tensor]:
         dtype = get_dtype(precision)
         device = next(self.core.parameters()).device
-        use_amp = device.type == "cuda" and dtype in {torch.float16, torch.bfloat16}
+        use_amp = device.type in {"cuda", "mps"} and dtype in {torch.float16, torch.bfloat16}
         with torch.autocast(device_type=device.type, dtype=dtype, enabled=use_amp):
             generation_schedule: torch.Tensor = data["generation_schedule"]
             if generation_schedule.size(0) != 1:

@@ -5,34 +5,59 @@ from functools import lru_cache
 from typing import Literal
 
 from langcodes import Language as LangcodesLanguage
-from lingua import Language, LanguageDetectorBuilder
-from tn.chinese.normalizer import Normalizer as ZhNormalizer
-from tn.english.normalizer import Normalizer as EnNormalizer
+
+# `lingua` (language autodetect) and `tn`/WeTextProcessing (text normalisation)
+# are imported lazily so this module loads without them. WeTextProcessing pulls
+# pynini, which has no macOS arm64 wheel and needs OpenFST to compile from
+# source - that breaks installing a relocatable env on a clean Mac. When the
+# caller passes an explicit `language` and leaves normalisation off (Cloney's
+# path), neither package is reached at runtime; the fallbacks below keep the
+# autodetect/normalise paths degrading gracefully instead of crashing on import.
 
 TextLanguage = Literal["zh", "en", "unknown"]
 
 _WHITESPACE_PATTERN = re.compile(r"\s+")
 
 
+class _IdentityNormalizer:
+    """Fallback when WeTextProcessing (tn) isn't installed: text passes through
+    unchanged (number/abbreviation expansion is skipped)."""
+
+    def normalize(self, text: str) -> str:
+        return text
+
+
 @lru_cache(maxsize=1)
-def get_chinese_text_normalizer() -> ZhNormalizer:
+def get_chinese_text_normalizer():
+    try:
+        from tn.chinese.normalizer import Normalizer as ZhNormalizer
+    except Exception:
+        return _IdentityNormalizer()
     return ZhNormalizer()
 
 
 @lru_cache(maxsize=1)
-def get_english_text_normalizer() -> EnNormalizer:
+def get_english_text_normalizer():
+    try:
+        from tn.english.normalizer import Normalizer as EnNormalizer
+    except Exception:
+        return _IdentityNormalizer()
     return EnNormalizer()
 
 
 @lru_cache(maxsize=1)
 def get_language_detector():
+    try:
+        from lingua import Language, LanguageDetectorBuilder
+    except Exception:
+        return None
     supported_languages = tuple(
         sorted(Language.all(), key=lambda language: language.name)
     )
     return LanguageDetectorBuilder.from_languages(*supported_languages).build()
 
 
-def _lingua_language_to_code(language: Language | None) -> str | None:
+def _lingua_language_to_code(language) -> str | None:
     if language is None:
         return None
     iso_code_639_1 = getattr(language.iso_code_639_1, "name", None)
@@ -48,7 +73,10 @@ def detect(text: str) -> str | None:
     stripped = text.strip()
     if not stripped:
         return None
-    language = get_language_detector().detect_language_of(stripped)
+    detector = get_language_detector()
+    if detector is None:
+        return None
+    language = detector.detect_language_of(stripped)
     return _lingua_language_to_code(language)
 
 
